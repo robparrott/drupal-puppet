@@ -19,12 +19,19 @@ class drush {
   }
 
   file {
+    '/usr/share/drush':
+      ensure  => directory,
+      recurse => true,
+      purge   => true,    
+  }
+  
+  file {
     '/usr/local/lib/drush':
       ensure  => directory,
       recurse => true,
       purge   => true,
       source  => '/tmp/drush',
-      require => Exec['fetch-drush'];
+      require => Exec['fetch-drush'];            
     '/usr/share/drush/commands/drush_make':
       ensure  => directory,
       recurse => true,
