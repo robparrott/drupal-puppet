@@ -9,7 +9,10 @@ class varnish::params(
   $package            = 'varnish',
   $service            = 'varnish',
   $sysconfig          = '/etc/sysconfig/varnish',
-  $purge_ips          = [ '127.0.0.1' ]
+  $purge_ips          = [ '127.0.0.1' ],
+  $probe_interval     = "30s",
+  $probe_timeout      = "10s",  
+  $probe_window       = "5"
 ) {
 
 }

@@ -4,9 +4,9 @@ backend drupal {
   .port = "<%= backend_port %>";
   .probe = {
     .url = "/";
-    .interval = 30s;
-    .timeout = 10s;
-    .window = 5;
+    .interval = <%= probe_interval %>;
+    .timeout  = <%= probe_timeout %>;
+    .window   = <%= probe_window %>;
     .threshold = 3;
   }
 }

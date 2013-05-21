@@ -34,7 +34,10 @@ class varnish::config {
   $listen_port        = $varnish::params::listen_port
   $admin_listen_port  = $varnish::params::admin_listen_port
   $purge_ips          = $varnish::params::purge_ips
-
+  $probe_interval     = $varnish::params::probe_interval
+  $probe_timeout      = $varnish::params::probe_timeout
+  $probe_window       = $varnish::params::probe_window
+       
   file {
     'varnish/default.vcl':
       path      => $varnish::params::default_vcl,
