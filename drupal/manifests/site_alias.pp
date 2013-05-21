@@ -4,7 +4,7 @@ define drupal::site_alias(
 ) {
 
   $target = "${drupal_root}/sites/${site}"
-  $link = "${drupal_root}/sites/${name}"
+  $link   = "${drupal_root}/sites/${name}"
 
   file { $name:
     ensure => link,
