@@ -1,7 +1,20 @@
+#
+# Varnish config based on the following
+#
+#   https://gist.github.com/benclark/1942570/raw/22a7dfa1486a80b281230d6d826986f2575a81ae/default.vcl
+#
+# for HWPI group, 
+#
 
-backend drupal {
+# call this "default" or "drupal"?
+backend default {
   .host = "<%= backend_host %>";
   .port = "<%= backend_port %>";
+  .connect_timeout = 600s;
+  .first_byte_timeout = 600s;
+  .between_bytes_timeout = 600s;
+  
+  # Not sure if this is still needed/useful  
   .probe = {
     .url = "/";
     .interval = <%= probe_interval %>;
@@ -18,218 +31,208 @@ acl purge {
 <% end -%>
 }
 
-/* Request is received */
-
-/************************* vcl_recv *****************************/
-
 sub vcl_recv {
-  /* Backend pool */
-  set req.backend = drupal;
+  if (req.request == "GET" && req.url ~ "^/varnishcheck$") {
+    error 200 "Varnish is Ready";
+  }
 
-  /**
-   * Make sure the request is a valid type for us to deal with
-   */
+  # Add a unique header containing the client address.
+  set req.http.X-Forwarded-For = client.ip;
 
-	if (req.request != "GET" &&
-		  req.request != "HEAD" &&
-			req.request != "PUT" &&
-			req.request != "POST" &&
-			req.request != "TRACE" &&
-			req.request != "OPTIONS" &&
-			req.request != "DELETE") {
-		/* Non-RFC2616 or CONNECT which is weird. */
-	  return (pipe);
-	}
+  if (req.request != "GET" &&
+    req.request != "HEAD" &&
+    req.request != "PUT" &&
+    req.request != "POST" &&
+    req.request != "TRACE" &&
+    req.request != "OPTIONS" &&
+    req.request != "PURGE" &&
+    req.request != "DELETE") {
+      # Non-RFC2616 or CONNECT which is weird.
+      return (pipe);
+  }
 
-	if (req.http.x-varnish-agent) {
-		return (pipe);
-	}
+  # We only deal with GET, PURGE and HEAD by default.
+  if (req.request != "GET" && req.request != "HEAD" && req.request != "PURGE") {
+    return (pass);
+  }
 
-	/* Allow purging */
-	if (req.request == "PURGE") {
-		if (!client.ip ~ purge) {
+  # --- PURGE ---
+  if (req.request == "PURGE") {
+    # Check if the ip coresponds with the acl purge
+    if (!client.ip ~ purge) {
+      # Return error code 405 (Forbidden) when not
       error 405 "Not allowed.";
-		} 
+    }
     return (lookup);
-	}
-
-	/**
-	 * We only deal with GET and HEAD by default
-	 */
-
-	if (req.request != "GET" && req.request != "HEAD") {
-		return (pass);
-	} 
-
-	/** In case backend is healthy, don't grace for long.
-	 *  If backend is down we can serve a bit more stale objects
-	 *  and wait for the backend to come back. If backend is alive
-	 *  we do stale-while-revalidate for 60s.
-	 */
-
-  if (req.backend.healthy) {
-		set req.grace = 60s;
-  }
-	else {
-		set req.grace = 72h;
   }
 
-  /**
-   * No point in sending cookies to static items.
-   */
+  # --- PASSTHROUGH ---
 
-	if (req.url ~ "\.(css|js|jpg|jpeg|gif|ico|png|swf)") {
-		remove req.http.cookie;
-		return (lookup);
-	}
+  # Always cache things with these extensions.
+  if (req.url ~ "\.(js|css|jpg|jpeg|png|gif|gz|tgz|bz2|tbz|mp3|ogg|swf)$") {
+    unset req.http.cookie;
+    return (lookup);
+  }
 
-	/**
-	 *  Parse accept encoding rulesets to normalize.
-	 */
+  # Do not cache if HTTP authorized.
+  if (req.http.Authorization) {
+    return (pass);
+  }
 
-	if (req.http.Accept-Encoding) {
-		if (req.url ~ "\.(jpg|jpeg|png|gif|gz|tgz|bz2|tbz|mp3|ogg|swf|mp4|flv)") {
-			# Do not try to compress already compressed files.
-			remove req.http.Accept-Encoding;
-   	}
-		elsif (req.http.Accept-Encoding ~ "gzip") {
-			set req.http.Accept-Encoding = "gzip";
-		}
-		elsif (req.http.Accept-Encoding ~ "deflate") {
-			set req.http.Accept-Encoding = "deflate";
-		}
-		else {
-     	# Unkown algorithm.
-			remove req.http.Accept-Encoding;
-   	}
-	}
+  # Skip the Varnish cache for install, update, and cron.
+  if (req.url ~ "install\.php|update\.php|cron\.php") {
+    return (pass);
+  }
 
-	if (req.http.Cookie) {
-		# Simplify tokenization
-		# Remove osas and google analytics cookies  TODO. Cleanup
+  # Skip the Varnish cache for Springboard standalone cron.
+  if (req.url ~ "queue_processor_cron|fundraiser_cron") {
+    return (pass);
+  }
 
-		set req.http.Cookie= regsuball(req.http.Cookie, "(^|; )(\_\_utm.)=[^;]*", "");
-		
-   	if (req.http.Cookie ~ "^;") {
-      set req.http.Cookie = regsuball(req.http.Cookie, "^;", "");
-   	}
+  # Pass server-status.
+  if (req.url ~ ".*/server-status$") {
+    return (pass);
+  }
 
-		# Finally remove cookie header if it is now empty.
+  # Support for Pressflow Cookie-Cache Bypass.
+  if (req.http.cookie ~ "NO_CACHE") {
+    return (pass);
+  }
 
-		if (req.http.Cookie == "") {
-			remove req.http.Cookie;
-		}
-	}
+  # Force lookup if the request is a no-cache request from the client.
+  if (req.http.Cache-Control ~ "no-cache") {
+    return (pass);
+  }
 
-  /**
-   * Do not cache auth or cookied requests.
-   */
+  # Don't check cache if Drupal SESSION is set.
+  if (req.http.cookie ~ "SESS") {
+    return (pass);
+  }
 
-	if (req.http.Authorization || req.http.Cookie) {
-		return (pass);
-	}
+  # We  "hide" the non-session cookies.
+  if (req.http.cookie) {
+    set req.http.X-Varnish-Cookie = req.http.cookie;
+    unset req.http.cookie;
+  }
 
-	/**
-   * If we have got this far we should be caching.
-	 */
+  # --- MISC ---
 
-	if ((req.request == "GET" || req.request == "HEAD") ) {
-		return (lookup);
-	}
+  # Normalize the Accept-Encoding header
+  # as per: http://varnish-cache.org/wiki/FAQ/Compression
+  if (req.http.Accept-Encoding) {
+    if (req.url ~ "\.(jpg|png|gif|gz|tgz|bz2|tbz|mp3|ogg)$") {
+      # No point in compressing these.
+      unset req.http.Accept-Encoding;
+    }
+    else if (req.http.Accept-Encoding ~ "gzip") {
+      set req.http.Accept-Encoding = "gzip";
+    }
+    else if (req.http.Accept-Encoding ~ "deflate") {
+      # Next, try deflate if it is supported.
+      set req.http.Accept-Encoding = "deflate";
+    }
+    else {
+      # Unknown or deflate algorithm.
+      unset req.http.Accept-Encoding;
+    }
+  }
+
+  # Let's have a little grace.
+  set req.grace = 5m;
+
+  return (lookup);
 }
-
-/************************* vcl_fetch *****************************/
-
-sub vcl_fetch {
-
-	/* This should be the same value as req.grace when backend is sick */
-
-	set beresp.grace = 72h;
-
-	/* Never use ETag as the files will have slightly different inodes and timestamps on each server */
-
-	unset beresp.http.ETag;
-	unset beresp.http.expires;
-
-	/**
-	* Previous cookie handling removed the entire cookie if a part of it
-	* was invalid. This cookie logic only removes the chips we need
-	*/
-
-	if (beresp.http.Set-Cookie) {
-		# Simplify tokenization
-		set beresp.http.Set-Cookie= regsuball(beresp.http.Set-Cookie, "(^|;)(abc.|asd|erfge|sdcwer|\_\_utm.)=[^;]*", "");
-
-		# Finally remove cookie header if it is now empty.
-		if (beresp.http.Set-Cookie == "") {
-			remove beresp.http.Set-Cookie;
-		}
-	}
-
-	set req.http.x-varnish-agent = "1";
-
-  /**
-   * These items can be dynamically generated. However they very rarely change.
-   * We can afford to purge them if we need to rather than constantly recache them.
-   * Cache them for 3 hours. (10800 seconds)
-   */
-
-	if (req.url ~ "\.(js|jpg|jpeg|gif|ico|png|swf)") {
-		set beresp.http.Cache-Control = "public, max-age=10800";
-		set beresp.ttl = 1d;
-		return(deliver);
-	}
-}
-
-/************************* vcl_hash *****************************/
 
 sub vcl_hash {
-	hash_data(req.url);
-	if (req.http.host) {
-		hash_data(req.http.host);
-	} else {
-		hash_data(server.ip);
-	}
-	return (hash);
+  if (req.http.cookie) {
+    hash_data(req.http.cookie);
+  }
 }
 
-/************************* vcl_deliver *****************************/
+# Strip any cookies before an image/js/css is inserted into cache.
+sub vcl_fetch {
+  set beresp.grace = 5m;
 
-/* This is called when content is delivered to client */
-
-sub vcl_deliver {
-  if (obj.hits > 0) {
-    set resp.http.X-Cache-Action = "HIT";
-  } else {
-    set resp.http.X-Cache-Action = "MISS";
+  # These status codes should always pass through and never cache.
+  if (beresp.status == 503 || beresp.status == 500) {
+    set beresp.http.X-Cacheable = "NO: obj.status";
+    set beresp.http.X-Cacheable-status = beresp.status;
+    return (hit_for_pass);
   }
 
-  /**
-   * If the object is not a resource we've already bulked up the ttl
-   * then we don't want the browser to cache this
-   * for very long at all.
-   */
+  if (req.url ~ "\.(js|css|jpg|jpeg|png|gif|gz|tgz|bz2|tbz|mp3|ogg|swf)(\?[a-z0-9]+)?$") {
+    unset beresp.http.set-cookie;
+  }
+  else if (beresp.http.Cache-Control) {
+    unset beresp.http.Expires;
+  }
 
-	if (resp.http.Cache-Control != "public, max-age=10800") {
-		set resp.http.Cache-Control = "max-age = 10";
-	}
+  if (beresp.status == 301) {
+    set beresp.ttl = 1h;
+    return(deliver);
+  }
 
+  # All tests passed, therefore item is cacheable
+  set beresp.http.X-Cacheable = "YES";
 }
 
-/************************* vcl_hit *****************************/
+# Set a header to track a cache HIT/MISS.
+sub vcl_deliver {
+  if (obj.hits > 0) {
+    set resp.http.X-Varnish-Cache = "HIT";
+    set resp.http.X-Varnish-Hits = obj.hits;
+  }
+  else {
+    set resp.http.X-Varnish-Cache = "MISS";
+  }
+  # Set a header to track the webhead.
+  set resp.http.X-Varnish-IP = server.ip;
+}
 
 sub vcl_hit {
   if (req.request == "PURGE") {
-    set obj.ttl = 1s;
-    set obj.grace = 1s;
+    purge;
     error 200 "Purged.";
   }
 }
 
-/************************* vcl_miss *****************************/
-
 sub vcl_miss {
+  if (req.http.X-Varnish-Cookie) {
+    set bereq.http.cookie = req.http.X-Varnish-Cookie;
+    unset bereq.http.X-Varnish-Cookie;
+  }
   if (req.request == "PURGE") {
-    error 404 "Not in cache";
+    purge;
+    error 200 "Purged.";
   }
 }
+
+sub vcl_error {
+  # Let's deliver a friendlier error page.
+  set obj.http.Content-Type = "text/html; charset=utf-8";
+  synthetic {"
+  <?xml version="1.0" encoding="utf-8"?>
+  <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+  <html>
+    <head>
+      <title>"} + obj.status + " " + obj.response + {"</title>
+    </head>
+    <body>
+    <div id="page">
+      <h1>Page Could Not Be Loaded</h1>
+      <p>We're very sorry, but the page could not be loaded properly. This should be fixed very soon, and we apologize for any inconvenience.</p>
+      <hr />
+      <h4>Debug Info:</h4>
+        <pre>Status: "} + obj.status + {"
+Response: "} + obj.response + {"
+XID: "} + req.xid + {"</pre>
+      </div>
+    </body>
+   </html>
+  "};
+  return (deliver);
+}
+
+
+
