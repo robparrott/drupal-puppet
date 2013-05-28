@@ -1,0 +1,2 @@
+include pear
+include drush
