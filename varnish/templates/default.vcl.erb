@@ -222,6 +222,8 @@ sub vcl_error {
     <div id="page">
       <h1>Page Could Not Be Loaded</h1>
       <p>We're very sorry, but the page could not be loaded properly. This should be fixed very soon, and we apologize for any inconvenience.</p>
+      <p/>
+      <p><em>Note:</em> If this is a new installation, you may need to wait a short time until the proxy detects the application.</p>
       <hr />
       <h4>Debug Info:</h4>
         <pre>Status: "} + obj.status + {"
