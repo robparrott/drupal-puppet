@@ -1,6 +1,6 @@
 class drush {
 
-  $drush_branch_name = "7.x-5.9"
+  $drush_branch_name = "7.x-5.8"  # This version needed because newer requires php 5.3.5, which is beyond CentOS 6.4
   $drush_make_branch_name = "6.x-2.x"
 
   exec {
